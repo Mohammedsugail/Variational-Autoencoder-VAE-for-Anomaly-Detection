@@ -1,0 +1,124 @@
+# ===============================
+# 1. Imports
+# ===============================
+import numpy as np
+import tensorflow as tf
+from tensorflow.keras import layers, Model
+from sklearn.metrics import roc_auc_score, average_precision_score
+from sklearn.preprocessing import StandardScaler
+from sklearn.model_selection import train_test_split
+
+# ===============================
+# 2. Synthetic Dataset (Complex + Anomalies)
+# ===============================
+def generate_data(n_samples=6000, n_features=20, anomaly_ratio=0.1):
+    normal = np.random.normal(0, 1, size=(int(n_samples*(1-anomaly_ratio)), n_features))
+    anomalies = np.random.normal(4, 1.5, size=(int(n_samples*anomaly_ratio), n_features))
+    
+    X = np.vstack([normal, anomalies])
+    y = np.hstack([np.zeros(len(normal)), np.ones(len(anomalies))])
+    
+    idx = np.random.permutation(len(X))
+    return X[idx], y[idx]
+
+X, y = generate_data()
+X = StandardScaler().fit_transform(X)
+
+X_train, X_test, y_train, y_test = train_test_split(
+    X[y == 0], y[y == 0], test_size=0.2, random_state=42
+)
+
+# ===============================
+# 3. Sampling Layer (FIXED)
+# ===============================
+class Sampling(layers.Layer):
+    def call(self, inputs):
+        z_mean, z_log_var = inputs
+        epsilon = tf.random.normal(shape=tf.shape(z_mean))
+        return z_mean + tf.exp(0.5 * z_log_var) * epsilon
+
+# ===============================
+# 4. β-VAE Model
+# ===============================
+def build_beta_vae(input_dim, latent_dim=8, beta=1.0):
+    inputs = layers.Input(shape=(input_dim,))
+    
+    x = layers.Dense(64, activation="relu")(inputs)
+    x = layers.Dense(32, activation="relu")(x)
+    
+    z_mean = layers.Dense(latent_dim)(x)
+    z_log_var = layers.Dense(latent_dim)(x)
+    
+    z = Sampling()([z_mean, z_log_var])
+    
+    x = layers.Dense(32, activation="relu")(z)
+    x = layers.Dense(64, activation="relu")(x)
+    outputs = layers.Dense(input_dim)(x)
+    
+    vae = Model(inputs, outputs)
+    
+    # --- Loss ---
+    recon_loss = tf.reduce_mean(tf.reduce_sum(tf.square(inputs - outputs), axis=1))
+    kl_loss = -0.5 * tf.reduce_mean(
+        tf.reduce_sum(1 + z_log_var - tf.square(z_mean) - tf.exp(z_log_var), axis=1)
+    )
+    
+    vae.add_loss(recon_loss + beta * kl_loss)
+    vae.compile(optimizer="adam")
+    
+    return vae
+
+# ===============================
+# 5. Baseline Autoencoder
+# ===============================
+def build_autoencoder(input_dim):
+    inputs = layers.Input(shape=(input_dim,))
+    x = layers.Dense(64, activation="relu")(inputs)
+    x = layers.Dense(32, activation="relu")(x)
+    x = layers.Dense(64, activation="relu")(x)
+    outputs = layers.Dense(input_dim)(x)
+    
+    ae = Model(inputs, outputs)
+    ae.compile(optimizer="adam", loss="mse")
+    return ae
+
+# ===============================
+# 6. Train + Evaluate Function
+# ===============================
+def evaluate_model(model, X_train, X_test, X_full, y_full):
+    model.fit(X_train, X_train, epochs=40, batch_size=64, verbose=0)
+    
+    recon = model.predict(X_full, verbose=0)
+    errors = np.mean(np.square(X_full - recon), axis=1)
+    
+    roc = roc_auc_score(y_full, errors)
+    pr = average_precision_score(y_full, errors)
+    
+    return roc, pr
+
+# ===============================
+# 7. Systematic β Tuning
+# ===============================
+betas = [0.1, 0.5, 1.0, 2.0]
+results = []
+
+for beta in betas:
+    vae = build_beta_vae(X.shape[1], beta=beta)
+    roc, pr = evaluate_model(vae, X_train, X_test, X, y)
+    results.append((beta, roc, pr))
+
+# ===============================
+# 8. Baseline AE Evaluation
+# ===============================
+ae = build_autoencoder(X.shape[1])
+ae_roc, ae_pr = evaluate_model(ae, X_train, X_test, X, y)
+
+# ===============================
+# 9. Final Results
+# ===============================
+print("\nβ-VAE Results:")
+for beta, roc, pr in results:
+    print(f"Beta={beta} | ROC-AUC={roc:.4f} | PR-AUC={pr:.4f}")
+
+print("\nBaseline Autoencoder:")
+print(f"ROC-AUC={ae_roc:.4f} | PR-AUC={ae_pr:.4f}")
