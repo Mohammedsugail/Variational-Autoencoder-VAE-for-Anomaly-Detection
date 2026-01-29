@@ -1,0 +1,89 @@
+import numpy as np
+import pandas as pd
+import tensorflow as tf
+from tensorflow.keras import layers, Model
+from tensorflow.keras.losses import mse
+from sklearn.preprocessing import StandardScaler
+from sklearn.model_selection import train_test_split
+import matplotlib.pyplot as plt
+np.random.seed(42)
+
+# Normal data
+normal_data = np.random.normal(0, 1, size=(10000, 10))
+
+# Anomalies
+anomalies = np.random.normal(5, 1, size=(300, 10))
+
+X = np.vstack([normal_data, anomalies])
+y = np.hstack([np.zeros(len(normal_data)), np.ones(len(anomalies))])
+scaler = StandardScaler()
+X_scaled = scaler.fit_transform(X)
+
+X_train, X_test, y_train, y_test = train_test_split(
+    X_scaled, y, test_size=0.2, random_state=42
+)
+
+# Train only on NORMAL data
+X_train_normal = X_train[y_train == 0]
+input_dim = X_train_normal.shape[1]
+latent_dim = 2
+
+inputs = layers.Input(shape=(input_dim,))
+h = layers.Dense(16, activation="relu")(inputs)
+h = layers.Dense(8, activation="relu")(h)
+
+z_mean = layers.Dense(latent_dim)(h)
+def sampling(args):
+    z_mean, z_log_var = args
+    epsilon = tf.random.normal(shape=tf.shape(z_mean))
+    return z_mean + tf.exp(0.5 * z_log_var) * epsilon
+
+z = layers.Lambda(sampling)([z_mean, z_log_var])
+z_log_var = layers.Dense(latent_dim)(h)
+decoder_h1 = layers.Dense(8, activation="relu")
+decoder_h2 = layers.Dense(16, activation="relu")
+decoder_output = layers.Dense(input_dim)
+
+h_decoded = decoder_h1(z)
+h_decoded = decoder_h2(h_decoded)
+outputs = decoder_output(h_decoded)
+reconstruction_loss = mse(inputs, outputs) * input_dim
+kl_loss = -0.5 * tf.reduce_sum(
+    1 + z_log_var - tf.square(z_mean) - tf.exp(z_log_var),
+    axis=1
+)
+
+vae_loss = tf.reduce_mean(reconstruction_loss + kl_loss)
+vae = Model(inputs, outputs)
+vae.add_loss(vae_loss)
+vae.compile(optimizer="adam")
+
+vae.summary()
+history = vae.fit(
+    X_train_normal,
+    X_train_normal,
+    epochs=30,
+    batch_size=64,
+    validation_split=0.1
+)
+X_test_pred = vae.predict(X_test)
+reconstruction_error = np.mean(np.square(X_test - X_test_pred), axis=1)
+threshold = np.percentile(reconstruction_error, 95)
+
+y_pred = (reconstruction_error > threshold).astype(int)
+
+from sklearn.metrics import classification_report, confusion_matrix
+
+print("Confusion Matrix:")
+print(confusion_matrix(y_test, y_pred))
+
+print("\nClassification Report:")
+print(classification_report(y_test, y_pred))
+
+plt.figure(figsize=(8,5))
+plt.hist(reconstruction_error[y_test == 0], bins=50, alpha=0.6, label="Normal")
+plt.hist(reconstruction_error[y_test == 1], bins=50, alpha=0.6, label="Anomaly")
+plt.axvline(threshold, color="red", linestyle="--", label="Threshold")
+plt.legend()
+plt.title("Reconstruction Error Distribution")
+plt.show()
