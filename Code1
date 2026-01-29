@@ -1,0 +1,91 @@
+
+
+import numpy as np
+import tensorflow as tf
+from tensorflow.keras import layers, Model
+from sklearn.metrics import roc_auc_score, average_precision_score
+def generate_data(n_samples=10000, n_features=20, anomaly_ratio=0.02):
+    normal = np.random.multivariate_normal(
+        mean=np.zeros(n_features),
+        cov=np.eye(n_features),
+        size=int(n_samples * (1 - anomaly_ratio))
+    )
+
+    anomaly = np.random.multivariate_normal(
+        mean=np.ones(n_features) * 4,
+        cov=np.eye(n_features) * 3,
+        size=int(n_samples * anomaly_ratio)
+    )
+
+    X = np.vstack([normal, anomaly])
+    y = np.hstack([np.zeros(len(normal)), np.ones(len(anomaly))])
+
+    idx = np.random.permutation(len(X))
+    return X[idx], y[idx]
+class Sampling(layers.Layer):
+    def call(self, inputs):
+        z_mean, z_log_var = inputs
+        epsilon = tf.random.normal(shape=tf.shape(z_mean))
+        return z_mean + tf.exp(0.5 * z_log_var) * epsilon
+latent_dim = 8
+input_dim = 20
+beta = 1.0   # Will be tuned later
+
+inputs = layers.Input(shape=(input_dim,))
+x = layers.Dense(64, activation="relu")(inputs)
+x = layers.Dense(32, activation="relu")(x)
+
+z_mean = layers.Dense(latent_dim)(x)
+z_log_var = layers.Dense(latent_dim)(x)
+
+z = Sampling()([z_mean, z_log_var])
+
+encoder = Model(inputs, [z_mean, z_log_var, z], name="encoder")
+
+latent_inputs = layers.Input(shape=(latent_dim,))
+x = layers.Dense(32, activation="relu")(latent_inputs)
+x = layers.Dense(64, activation="relu")(x)
+outputs = layers.Dense(input_dim)(x)
+
+decoder = Model(latent_inputs, outputs, name="decoder")
+
+z_mean, z_log_var, z = encoder(inputs)
+reconstructed = decoder(z)
+
+vae = Model(inputs, reconstructed)
+recon_loss = tf.reduce_mean(
+    tf.reduce_sum(tf.keras.losses.mse(inputs, reconstructed), axis=1)
+)
+
+kl_loss = -0.5 * tf.reduce_mean(
+    tf.reduce_sum(1 + z_log_var - tf.square(z_mean) - tf.exp(z_log_var), axis=1)
+)
+
+vae_loss = recon_loss + beta * kl_loss
+vae.add_loss(vae_loss)
+vae.compile(optimizer="adam")
+X, y = generate_data()
+vae.fit(X, X, epochs=30, batch_size=128, verbose=1)
+X_recon = vae.predict(X)
+recon_error = np.mean(np.square(X - X_recon), axis=1)
+auc = roc_auc_score(y, recon_error)
+pr = average_precision_score(y, recon_error)
+
+print("VAE ROC-AUC:", auc)
+print("VAE PR-AUC:", pr)
+ae = tf.keras.Sequential([
+    layers.Dense(64, activation="relu", input_shape=(input_dim,)),
+    layers.Dense(32, activation="relu"),
+    layers.Dense(64, activation="relu"),
+    layers.Dense(input_dim)
+])
+
+ae.compile(optimizer="adam", loss="mse")
+ae.fit(X, X, epochs=30, batch_size=128, verbose=0)
+
+ae_recon = ae.predict(X)
+ae_error = np.mean(np.square(X - ae_recon), axis=1)
+
+print("AE ROC-AUC:", roc_auc_score(y, ae_error))
+for beta in [0.5, 1.0, 2.0]:
+    print(f"Testing beta = {beta}")
