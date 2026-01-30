@@ -1,0 +1,94 @@
+import torch
+import torch.nn as nn
+import torch.optim as optim
+from torch.utils.data import DataLoader, TensorDataset
+
+# -------------------------------
+# Hyperparameters (JUSTIFIED)
+# -------------------------------
+input_dim = 30          # Feature size of dataset
+latent_dim = 10         # Compact latent representation
+hidden_dim = 64
+batch_size = 32
+learning_rate = 1e-3
+epochs = 100            # Increased for better convergence
+beta = 1.0              # β-VAE regularization strength
+
+# -------------------------------
+# VAE Architecture
+# -------------------------------
+class VAE(nn.Module):
+    def __init__(self):
+        super(VAE, self).__init__()
+
+        # Encoder
+        self.fc1 = nn.Linear(input_dim, hidden_dim)
+        self.fc_mu = nn.Linear(hidden_dim, latent_dim)
+        self.fc_logvar = nn.Linear(hidden_dim, latent_dim)
+
+        # Decoder
+        self.fc2 = nn.Linear(latent_dim, hidden_dim)
+        self.fc3 = nn.Linear(hidden_dim, input_dim)
+
+    def encode(self, x):
+        h = torch.relu(self.fc1(x))
+        return self.fc_mu(h), self.fc_logvar(h)
+
+    def reparameterize(self, mu, logvar):
+        std = torch.exp(0.5 * logvar)
+        eps = torch.randn_like(std)
+        return mu + eps * std
+
+    def decode(self, z):
+        h = torch.relu(self.fc2(z))
+        return self.fc3(h)
+
+    def forward(self, x):
+        mu, logvar = self.encode(x)
+        z = self.reparameterize(mu, logvar)
+        recon = self.decode(z)
+        return recon, mu, logvar
+
+# -------------------------------
+# VAE Loss Function (Deliverable 2)
+# -------------------------------
+def vae_loss(recon_x, x, mu, logvar):
+    """
+    Total VAE Loss = Reconstruction Loss + β * KL Divergence
+    """
+    recon_loss = nn.MSELoss(reduction='sum')(recon_x, x)
+
+    kl_div = -0.5 * torch.sum(
+        1 + logvar - mu.pow(2) - logvar.exp()
+    )
+
+    return recon_loss + beta * kl_div
+
+# -------------------------------
+# Dummy Dataset (Replace with real data)
+# -------------------------------
+X = torch.randn(1000, input_dim)
+dataset = TensorDataset(X)
+loader = DataLoader(dataset, batch_size=batch_size, shuffle=True)
+
+# -------------------------------
+# Training Loop
+# -------------------------------
+model = VAE()
+optimizer = optim.Adam(model.parameters(), lr=learning_rate)
+
+for epoch in range(epochs):
+    total_loss = 0
+    for batch in loader:
+        data = batch[0]
+
+        optimizer.zero_grad()
+        recon, mu, logvar = model(data)
+        loss = vae_loss(recon, data, mu, logvar)
+
+        loss.backward()
+        optimizer.step()
+
+        total_loss += loss.item()
+
+    print(f"Epoch [{epoch+1}/{epochs}], Loss: {total_loss:.2f}")
