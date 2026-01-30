@@ -1,3 +1,66 @@
+import numpy as np
+import torch
+
+def generate_data(n_samples=10000, n_features=20, contamination=0.02):
+    # Create normal data (Mixture of Gaussians)
+    n_normal = int(n_samples * (1 - contamination))
+    mean1 = np.zeros(n_features)
+    mean2 = np.ones(n_features) * 2
+    
+    data_part1 = np.random.multivariate_normal(mean1, np.eye(n_features), n_normal // 2)
+    data_part2 = np.random.multivariate_normal(mean2, np.eye(n_features) * 0.5, n_normal - (n_normal // 2))
+    X_normal = np.vstack([data_part1, data_part2])
+    
+    # Create outliers (Uniformly distributed/far away)
+    n_outliers = n_samples - n_normal
+    X_outliers = np.random.uniform(low=-10, high=10, size=(n_outliers, n_features))
+    
+    X = np.vstack([X_normal, X_outliers]).astype(np.float32)
+    y = np.array([0] * n_normal + [1] * n_outliers)
+    return X, y
+mathcal{L} = \text{Reconstruction Loss} + \beta \cdot \text{KL Divergence}
+import torch.nn as nn
+import torch.nn.functional as F
+
+class VAE(nn.Module):
+    def __init__(self, input_dim, latent_dim):
+        super(VAE, self).__init__()
+        # Encoder
+        self.encoder = nn.Sequential(
+            nn.Linear(input_dim, 16),
+            nn.ReLU(),
+            nn.Linear(16, 8),
+            nn.ReLU()
+        )
+        self.fc_mu = nn.Linear(8, latent_dim)
+        self.fc_logvar = nn.Linear(8, latent_dim)
+        
+        # Decoder
+        self.decoder = nn.Sequential(
+            nn.Linear(latent_dim, 8),
+            nn.ReLU(),
+            nn.Linear(8, 16),
+            nn.ReLU(),
+            nn.Linear(16, input_dim)
+        )
+
+    def reparameterize(self, mu, logvar):
+        std = torch.exp(0.5 * logvar)
+        eps = torch.randn_like(std)
+        return mu + eps * std
+
+    def forward(self, x):
+        h = self.encoder(x)
+        mu, logvar = self.fc_mu(h), self.fc_logvar(h)
+        z = self.reparameterize(mu, logvar)
+        return self.decoder(z), mu, logvar
+
+def loss_function(recon_x, x, mu, logvar, beta=1.0):
+    recon_loss = F.mse_loss(recon_x, x, reduction='sum')
+    # KL Divergence formula
+    kl_loss = -0.5 * torch.sum(1 + logvar - mu.pow(2) - logvar.exp())
+    return recon_loss + beta * kl_loss
+
 import torch
 import torch.optim as optim
 from torch.utils.data import DataLoader, TensorDataset
